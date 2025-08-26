@@ -193,7 +193,7 @@ void send_marauder_command(BleScanner* app, const char* command) {
 // Vérifier la connexion Marauder
 bool check_marauder_connection(BleScanner* app) {
     if(!app || !app->serial_handle || !app->rx_stream) {
-        app->marauder_connected = false;
+        if(app) app->marauder_connected = false;
         return false;
     }
     
@@ -407,6 +407,8 @@ static BleScanner* ble_scanner_alloc() {
     app->widget = widget_alloc();
     app->text_box = text_box_alloc();
     app->text_box_store = furi_string_alloc();
+    
+    // Ajouter les vues une seule fois
     view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerSubmenuView, submenu_get_view(app->submenu));
     view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerWidget, widget_get_view(app->widget));
     view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerTextBoxView, text_box_get_view(app->text_box));
@@ -422,10 +424,6 @@ static BleScanner* ble_scanner_alloc() {
     submenu_add_item(app->submenu, "Show Results", BleSubmenuIndexShowResults, ble_scanner_submenu_callback, app);
     submenu_add_item(app->submenu, "Clear Results", BleSubmenuIndexClearResults, ble_scanner_submenu_callback, app);
     submenu_add_item(app->submenu, "Marauder Status", BleSubmenuIndexMarauderStatus, ble_scanner_submenu_callback, app);
-    
-    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerSubmenuView, submenu_get_view(app->submenu));
-    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerWidget, widget_get_view(app->widget));
-    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerTextBoxView, text_box_get_view(app->text_box));
     
     // Configuration UART pour ESP32 Marauder
     app->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
@@ -449,10 +447,11 @@ static BleScanner* ble_scanner_alloc() {
     
     // Test connexion Marauder avec délai plus court
     furi_delay_ms(500);
-    if(app->serial_handle) {
+    if(app->serial_handle && app->rx_stream) {
         check_marauder_connection(app);
     }
     
+    FURI_LOG_I(TAG, "BLE Scanner app allocated successfully");
     return app;
 }
 
@@ -505,6 +504,16 @@ int32_t ble_scanner_app(void* p) {
     UNUSED(p);
     
     BleScanner* app = ble_scanner_alloc();
+    if(!app) {
+        FURI_LOG_E(TAG, "Failed to allocate app");
+        return -1;
+    }
+    
+    if(!app->view_dispatcher || !app->gui) {
+        FURI_LOG_E(TAG, "Critical components not initialized");
+        ble_scanner_free(app);
+        return -1;
+    }
     
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
     view_dispatcher_switch_to_view(app->view_dispatcher, BleSceneScannerSubmenuView);
