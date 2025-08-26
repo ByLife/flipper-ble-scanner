@@ -318,7 +318,8 @@ void ble_scanner_submenu_callback(void* context, uint32_t index) {
 // Navigation callback
 bool ble_scanner_navigation_event_callback(void* context) {
     BleScanner* app = context;
-    return view_dispatcher_send_custom_event(app->view_dispatcher, 42);
+    view_dispatcher_send_custom_event(app->view_dispatcher, 42);
+    return true;
 }
 
 // Custom event callback
