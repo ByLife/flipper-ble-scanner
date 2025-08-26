@@ -8,10 +8,9 @@ App(
     requires=[
         "gui",
         "notification",
-        "furi_hal",
     ],
     fap_category="GPIO",
     fap_description="REAL BLE Scanner using ESP32 Marauder via UART. Scans actual Bluetooth devices!",
     fap_author="FlipperZero Community",
-    fap_version="2.0",
+    fap_version="2.1",
 )
