@@ -6,12 +6,11 @@
 #include <gui/modules/widget.h>
 #include <gui/modules/text_box.h>
 #include <notification/notification_messages.h>
-#include <furi_hal_uart.h>
+#include <furi_hal_serial.h>
 #include <stream_buffer.h>
 
 #define TAG "BLE_Scanner"
 #define MAX_DEVICES 50
-#define UART_CH (FuriHalUartIdUSART1)
 #define BAUDRATE 115200
 #define RX_BUF_SIZE 2048
 
@@ -32,6 +31,9 @@ typedef struct {
     Widget* widget;
     TextBox* text_box;
     NotificationApp* notifications;
+    
+    FuriHalSerialHandle* serial_handle;
+    bool serial_init_by_app;
     
     BleDevice devices[MAX_DEVICES];
     uint16_t device_count;
@@ -66,10 +68,12 @@ enum BleSubmenuIndex {
 };
 
 // Callback UART pour recevoir des données du Marauder
-void uart_on_irq_cb(UartIrqEvent ev, uint8_t data, void* context) {
+void uart_on_irq_cb(FuriHalSerialHandle* handle, FuriHalSerialRxEvent event, void* context) {
+    UNUSED(handle);
     BleScanner* app = (BleScanner*)context;
     
-    if(ev == UartIrqEventRXNE) {
+    if(event == FuriHalSerialRxEventData) {
+        uint8_t data = furi_hal_serial_async_rx(app->serial_handle);
         furi_stream_buffer_send(app->rx_stream, &data, 1, 0);
     }
 }
@@ -161,10 +165,12 @@ int32_t uart_worker(void* context) {
 }
 
 // Envoyer une commande au Marauder
-void send_marauder_command(const char* command) {
-    furi_hal_uart_tx(UART_CH, (uint8_t*)command, strlen(command));
-    furi_hal_uart_tx(UART_CH, (uint8_t*)"\r\n", 2);
-    furi_delay_ms(100);
+void send_marauder_command(BleScanner* app, const char* command) {
+    if(app->serial_handle) {
+        furi_hal_serial_tx(app->serial_handle, (uint8_t*)command, strlen(command));
+        furi_hal_serial_tx(app->serial_handle, (uint8_t*)"\r\n", 2);
+        furi_delay_ms(100);
+    }
 }
 
 // Vérifier la connexion Marauder
@@ -173,7 +179,7 @@ bool check_marauder_connection(BleScanner* app) {
     furi_stream_buffer_reset(app->rx_stream);
     
     // Envoyer commande de statut
-    send_marauder_command("help");
+    send_marauder_command(app, "help");
     
     // Attendre réponse
     furi_delay_ms(1000);
@@ -212,13 +218,13 @@ void ble_scanner_start_real_scan(BleScanner* app) {
     notification_message(app->notifications, &sequence_blink_start_cyan);
     
     // Commande pour scanner BLE avec Marauder
-    send_marauder_command("scanap -t bt");
+    send_marauder_command(app, "scanap -t bt");
     
     // Scanner pendant 15 secondes
     furi_delay_ms(15000);
     
     // Arrêter le scan
-    send_marauder_command("stopscan");
+    send_marauder_command(app, "stopscan");
     
     app->scanning = false;
     notification_message(app->notifications, &sequence_blink_stop);
@@ -232,7 +238,7 @@ void ble_scanner_stop_scan(BleScanner* app) {
     
     FURI_LOG_I(TAG, "Stopping BLE scan...");
     
-    send_marauder_command("stopscan");
+    send_marauder_command(app, "stopscan");
     app->scanning = false;
     
     notification_message(app->notifications, &sequence_blink_stop);
@@ -332,11 +338,15 @@ bool ble_scanner_custom_event_callback(void* context, uint32_t event) {
             furi_string_cat_printf(app->text_box_store,
                                   "ESP32 Marauder Status:\n"
                                   "Connection: %s\n\n"
-                                  "GPIO Wiring:\n"
+                                  "GPIO Wiring (USART):\n"
                                   "ESP32 TX -> Flipper Pin 13 (RX)\n"
                                   "ESP32 RX -> Flipper Pin 14 (TX)\n"
                                   "ESP32 GND -> Flipper Pin 11 (GND)\n"
                                   "ESP32 3.3V -> Flipper Pin 9 (3.3V)\n\n"
+                                  "Make sure:\n"
+                                  "- ESP32 Marauder firmware installed\n"
+                                  "- GPIO connections secure\n"
+                                  "- Baud rate: 115200\n\n"
                                   "Commands available:\n"
                                   "- scanap -t bt (BLE scan)\n"
                                   "- stopscan\n"
@@ -388,8 +398,13 @@ static BleScanner* ble_scanner_alloc() {
     view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerTextBoxView, text_box_get_view(app->text_box));
     
     // Configuration UART pour ESP32 Marauder
-    furi_hal_uart_set_br(UART_CH, BAUDRATE);
-    furi_hal_uart_set_irq_cb(UART_CH, uart_on_irq_cb, app);
+    app->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
+    app->serial_init_by_app = !furi_hal_serial_is_baud_rate_supported(app->serial_handle, BAUDRATE);
+    
+    if(app->serial_handle) {
+        furi_hal_serial_init(app->serial_handle, BAUDRATE);
+        furi_hal_serial_async_rx_start(app->serial_handle, uart_on_irq_cb, app, false);
+    }
     
     // Démarrer worker thread
     app->worker_running = true;
@@ -420,7 +435,11 @@ static void ble_scanner_free(BleScanner* app) {
     }
     
     // Nettoyer UART
-    furi_hal_uart_set_irq_cb(UART_CH, NULL, NULL);
+    if(app->serial_handle) {
+        furi_hal_serial_async_rx_stop(app->serial_handle);
+        furi_hal_serial_deinit(app->serial_handle);
+        furi_hal_serial_control_release(app->serial_handle);
+    }
     
     view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerTextBoxView);
     view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerWidget);
