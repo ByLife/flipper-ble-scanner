@@ -1,0 +1,19 @@
+App(
+    appid="ble_scanner",
+    name="BLE Scanner",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="ble_scanner_app",
+    stack_size=2 * 1024,
+    cdefines=["APP_BLE_SCANNER"],
+    requires=[
+        "gui",
+        "bt",
+        "notification",
+    ],
+    fap_icon="ble_scanner.png",
+    fap_category="Bluetooth",
+    fap_description="Scanner for Bluetooth Low Energy devices",
+    fap_author="FlipperZero Community",
+    fap_version="1.0",
+    fap_icon_assets="icons",
+)
