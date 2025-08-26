@@ -401,7 +401,6 @@ static BleScanner* ble_scanner_alloc() {
     
     app->rx_stream = furi_stream_buffer_alloc(RX_BUF_SIZE, 1);
     
-    view_dispatcher_enable_queue(app->view_dispatcher);
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_custom_event_callback(app->view_dispatcher, ble_scanner_custom_event_callback);
     view_dispatcher_set_navigation_event_callback(app->view_dispatcher, ble_scanner_navigation_event_callback);
@@ -418,7 +417,6 @@ static BleScanner* ble_scanner_alloc() {
     
     // Configuration UART pour ESP32 Marauder
     app->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
-    app->serial_init_by_app = !furi_hal_serial_is_baud_rate_supported(app->serial_handle, BAUDRATE);
     
     if(app->serial_handle) {
         furi_hal_serial_init(app->serial_handle, BAUDRATE);
