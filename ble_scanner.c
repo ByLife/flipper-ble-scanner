@@ -7,7 +7,6 @@
 #include <gui/modules/text_box.h>
 #include <notification/notification_messages.h>
 #include <furi_hal_serial.h>
-#include <stream_buffer.h>
 
 #define TAG "BLE_Scanner"
 #define MAX_DEVICES 50
@@ -33,7 +32,6 @@ typedef struct {
     NotificationApp* notifications;
     
     FuriHalSerialHandle* serial_handle;
-    bool serial_init_by_app;
     
     BleDevice devices[MAX_DEVICES];
     uint16_t device_count;
@@ -75,6 +73,11 @@ void uart_on_irq_cb(FuriHalSerialHandle* handle, FuriHalSerialRxEvent event, voi
     if(event == FuriHalSerialRxEventData) {
         uint8_t data = furi_hal_serial_async_rx(app->serial_handle);
         furi_stream_buffer_send(app->rx_stream, &data, 1, 0);
+        
+        // Signal worker thread that data is available
+        if(app->worker_thread) {
+            furi_thread_flags_set(furi_thread_get_id(app->worker_thread), (1 << 0));
+        }
     }
 }
 
@@ -119,43 +122,54 @@ int32_t uart_worker(void* context) {
     FURI_LOG_I(TAG, "UART Worker started");
     
     while(app->worker_running) {
-        size_t bytes_read = furi_stream_buffer_receive(app->rx_stream, data, sizeof(data), 100);
-        
-        for(size_t i = 0; i < bytes_read; i++) {
-            char c = (char)data[i];
+        uint32_t events = furi_thread_flags_wait(
+            (1 << 0) | (1 << 1), // DataWaiting | Exiting  
+            FuriFlagWaitAny, 
+            100); // 100ms timeout
             
-            if(c == '\n' || c == '\r') {
-                if(line_pos > 0) {
-                    line_buffer[line_pos] = '\0';
-                    
-                    // Parser la ligne pour détecter des appareils BLE
-                    BleDevice temp_device = {0};
-                    if(parse_ble_device(line_buffer, &temp_device)) {
+        if(events & (1 << 1)) { // Exiting
+            break;
+        }
+        
+        if(events & (1 << 0)) { // DataWaiting
+            size_t bytes_read = furi_stream_buffer_receive(app->rx_stream, data, sizeof(data), 0);
+            
+            for(size_t i = 0; i < bytes_read; i++) {
+                char c = (char)data[i];
+                
+                if(c == '\n' || c == '\r') {
+                    if(line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
                         
-                        // Vérifier si l'appareil existe déjà
-                        bool found = false;
-                        for(uint16_t j = 0; j < app->device_count; j++) {
-                            if(strcmp(app->devices[j].mac, temp_device.mac) == 0) {
-                                // Mettre à jour RSSI
-                                app->devices[j].rssi = temp_device.rssi;
-                                found = true;
-                                break;
+                        // Parser la ligne pour détecter des appareils BLE
+                        BleDevice temp_device = {0};
+                        if(parse_ble_device(line_buffer, &temp_device)) {
+                            
+                            // Vérifier si l'appareil existe déjà
+                            bool found = false;
+                            for(uint16_t j = 0; j < app->device_count; j++) {
+                                if(strcmp(app->devices[j].mac, temp_device.mac) == 0) {
+                                    // Mettre à jour RSSI
+                                    app->devices[j].rssi = temp_device.rssi;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            
+                            // Ajouter nouveau device si pas trouvé et place disponible
+                            if(!found && app->device_count < MAX_DEVICES) {
+                                app->devices[app->device_count] = temp_device;
+                                app->device_count++;
+                                FURI_LOG_I(TAG, "BLE Device found: %s (%s) %d dBm", 
+                                          temp_device.name, temp_device.mac, temp_device.rssi);
                             }
                         }
                         
-                        // Ajouter nouveau device si pas trouvé et place disponible
-                        if(!found && app->device_count < MAX_DEVICES) {
-                            app->devices[app->device_count] = temp_device;
-                            app->device_count++;
-                            FURI_LOG_I(TAG, "BLE Device found: %s (%s) %d dBm", 
-                                      temp_device.name, temp_device.mac, temp_device.rssi);
-                        }
+                        line_pos = 0;
                     }
-                    
-                    line_pos = 0;
+                } else if(line_pos < sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
                 }
-            } else if(line_pos < sizeof(line_buffer) - 1) {
-                line_buffer[line_pos++] = c;
             }
         }
     }
@@ -380,6 +394,10 @@ static BleScanner* ble_scanner_alloc() {
     app->widget = widget_alloc();
     app->text_box = text_box_alloc();
     app->text_box_store = furi_string_alloc();
+    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerSubmenuView, submenu_get_view(app->submenu));
+    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerWidget, widget_get_view(app->widget));
+    view_dispatcher_add_view(app->view_dispatcher, BleSceneScannerTextBoxView, text_box_get_view(app->text_box));
+    
     app->rx_stream = furi_stream_buffer_alloc(RX_BUF_SIZE, 1);
     
     view_dispatcher_enable_queue(app->view_dispatcher);
@@ -428,8 +446,9 @@ static void ble_scanner_free(BleScanner* app) {
     ble_scanner_stop_scan(app);
     
     // Arrêter worker
-    app->worker_running = false;
     if(app->worker_thread) {
+        app->worker_running = false;
+        furi_thread_flags_set(furi_thread_get_id(app->worker_thread), (1 << 1)); // Exiting flag
         furi_thread_join(app->worker_thread);
         furi_thread_free(app->worker_thread);
     }
