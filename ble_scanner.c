@@ -180,15 +180,23 @@ int32_t uart_worker(void* context) {
 
 // Envoyer une commande au Marauder
 void send_marauder_command(BleScanner* app, const char* command) {
-    if(app->serial_handle) {
-        furi_hal_serial_tx(app->serial_handle, (uint8_t*)command, strlen(command));
-        furi_hal_serial_tx(app->serial_handle, (uint8_t*)"\r\n", 2);
-        furi_delay_ms(100);
-    }
+    if(!app || !app->serial_handle || !command) return;
+    
+    size_t len = strlen(command);
+    if(len == 0) return;
+    
+    furi_hal_serial_tx(app->serial_handle, (uint8_t*)command, len);
+    furi_hal_serial_tx(app->serial_handle, (uint8_t*)"\r\n", 2);
+    furi_delay_ms(100);
 }
 
 // Vérifier la connexion Marauder
 bool check_marauder_connection(BleScanner* app) {
+    if(!app || !app->serial_handle || !app->rx_stream) {
+        app->marauder_connected = false;
+        return false;
+    }
+    
     // Vider le buffer
     furi_stream_buffer_reset(app->rx_stream);
     
@@ -199,7 +207,7 @@ bool check_marauder_connection(BleScanner* app) {
     furi_delay_ms(1000);
     
     uint8_t data[256];
-    size_t bytes = furi_stream_buffer_receive(app->rx_stream, data, sizeof(data), 0);
+    size_t bytes = furi_stream_buffer_receive(app->rx_stream, data, sizeof(data) - 1, 0);
     
     if(bytes > 0) {
         data[bytes] = '\0';
@@ -386,6 +394,10 @@ bool ble_scanner_custom_event_callback(void* context, uint32_t event) {
 // Allocation de l'app
 static BleScanner* ble_scanner_alloc() {
     BleScanner* app = malloc(sizeof(BleScanner));
+    if(!app) return NULL;
+    
+    // Initialiser tous les pointeurs à NULL d'abord
+    memset(app, 0, sizeof(BleScanner));
     
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
@@ -419,37 +431,45 @@ static BleScanner* ble_scanner_alloc() {
     app->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
     
     if(app->serial_handle) {
-        furi_hal_serial_init(app->serial_handle, BAUDRATE);
-        furi_hal_serial_async_rx_start(app->serial_handle, uart_on_irq_cb, app, false);
+        if(furi_hal_serial_init(app->serial_handle, BAUDRATE)) {
+            furi_hal_serial_async_rx_start(app->serial_handle, uart_on_irq_cb, app, false);
+        }
     }
     
     // Démarrer worker thread
     app->worker_running = true;
     app->worker_thread = furi_thread_alloc_ex("BLEScannerWorker", 2048, uart_worker, app);
-    furi_thread_start(app->worker_thread);
+    if(app->worker_thread) {
+        furi_thread_start(app->worker_thread);
+    }
     
     // Initialiser les données
     app->device_count = 0;
     app->scanning = false;
     app->marauder_connected = false;
     
-    // Test connexion Marauder
-    furi_delay_ms(1000);
-    check_marauder_connection(app);
+    // Test connexion Marauder avec délai plus court
+    furi_delay_ms(500);
+    if(app->serial_handle) {
+        check_marauder_connection(app);
+    }
     
     return app;
 }
 
 // Libération de l'app
 static void ble_scanner_free(BleScanner* app) {
+    if(!app) return;
+    
     ble_scanner_stop_scan(app);
     
-    // Arrêter worker
+    // Arrêter worker en premier
     if(app->worker_thread) {
         app->worker_running = false;
         furi_thread_flags_set(furi_thread_get_id(app->worker_thread), (1 << 1)); // Exiting flag
         furi_thread_join(app->worker_thread);
         furi_thread_free(app->worker_thread);
+        app->worker_thread = NULL;
     }
     
     // Nettoyer UART
@@ -457,22 +477,26 @@ static void ble_scanner_free(BleScanner* app) {
         furi_hal_serial_async_rx_stop(app->serial_handle);
         furi_hal_serial_deinit(app->serial_handle);
         furi_hal_serial_control_release(app->serial_handle);
+        app->serial_handle = NULL;
     }
     
-    view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerTextBoxView);
-    view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerWidget);
-    view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerSubmenuView);
+    // Nettoyer les vues
+    if(app->view_dispatcher) {
+        view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerTextBoxView);
+        view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerWidget);
+        view_dispatcher_remove_view(app->view_dispatcher, BleSceneScannerSubmenuView);
+        view_dispatcher_free(app->view_dispatcher);
+    }
     
-    text_box_free(app->text_box);
-    widget_free(app->widget);
-    submenu_free(app->submenu);
-    view_dispatcher_free(app->view_dispatcher);
+    if(app->text_box) text_box_free(app->text_box);
+    if(app->widget) widget_free(app->widget);
+    if(app->submenu) submenu_free(app->submenu);
     
-    furi_stream_buffer_free(app->rx_stream);
-    furi_string_free(app->text_box_store);
+    if(app->rx_stream) furi_stream_buffer_free(app->rx_stream);
+    if(app->text_box_store) furi_string_free(app->text_box_store);
     
-    furi_record_close(RECORD_NOTIFICATION);
-    furi_record_close(RECORD_GUI);
+    if(app->notifications) furi_record_close(RECORD_NOTIFICATION);
+    if(app->gui) furi_record_close(RECORD_GUI);
     
     free(app);
 }
