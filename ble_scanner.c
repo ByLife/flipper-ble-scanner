@@ -431,9 +431,8 @@ static BleScanner* ble_scanner_alloc() {
     app->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
     
     if(app->serial_handle) {
-        if(furi_hal_serial_init(app->serial_handle, BAUDRATE)) {
-            furi_hal_serial_async_rx_start(app->serial_handle, uart_on_irq_cb, app, false);
-        }
+        furi_hal_serial_init(app->serial_handle, BAUDRATE);
+        furi_hal_serial_async_rx_start(app->serial_handle, uart_on_irq_cb, app, false);
     }
     
     // Démarrer worker thread
